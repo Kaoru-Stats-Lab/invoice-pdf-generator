@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>見積・納品・請求書3連動ジェネレーター（完全版）</title>
+    <title>見積・納品・請求書3連動ジェネレーター（並び替え対応版）</title>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
     <style>
@@ -28,6 +28,18 @@
         .stamp-img {
             mix-blend-mode: multiply;
             pointer-events: none;
+        }
+
+        /* ドラッグ中の視覚フィードバック用スタイル */
+        .sortable-row {
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .sortable-row.dragging {
+            opacity: 0.5;
+            background-color: #e2e8f0;
+            border-style: dashed;
+            border-color: #cbd5e1;
+            box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1);
         }
 
         @media print {
@@ -149,17 +161,17 @@
 
             <div class="border-t border-slate-100 pt-4 space-y-3">
                 <div class="flex justify-between items-center">
-                    <h3 class="text-xs font-bold text-slate-800 border-l-2 border-indigo-600 pl-2">📊 項目明細（値引きは単価をマイナス入力）</h3>
+                    <h3 class="text-xs font-bold text-slate-800 border-l-2 border-indigo-600 pl-2">📊 項目明細（☰をドラッグして並び替え / 値引きは単価をマイナス入力）</h3>
                     <button type="button" onclick="addDetailRow()" class="bg-slate-900 hover:bg-slate-800 text-white font-medium text-[11px] px-2.5 py-1 rounded-md transition-all cursor-pointer">+ 行を追加</button>
                 </div>
                 <div class="grid grid-cols-12 gap-2 px-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider hidden sm:grid">
-                    <div class="col-span-5">品名・内容（例: 出精値引き）</div>
+                    <div class="col-span-5 pl-7">品名・内容（例: 出精値引き）</div>
                     <div class="col-span-2 text-right">数量</div>
                     <div class="col-span-2 text-right">単価</div>
                     <div class="col-span-2 text-center">税率</div>
                     <div class="col-span-1"></div>
                 </div>
-                <div id="form-item-container" class="space-y-2 max-h-[240px] overflow-y-auto pr-1"></div>
+                <div id="form-item-container" class="space-y-2 max-h-[260px] overflow-y-auto pr-1"></div>
             </div>
 
             <div class="border-t border-slate-100 pt-4 space-y-2">
@@ -286,7 +298,7 @@
                 numberLabel: '🔢 納品番号', numberPlaceholder: 'DLV-2026-001',
                 titlePlaceholder: 'システム開発プロジェクト納品の件', totalLabel: '御納品金額（税込合計）',
                 noteLabel: '【検収・備考】', honorBgClass: 'bg-slate-700', btnId: 'btn-type-delivery',
-                noteContent: '※本日付をもちまして、上記の通り納品が完了いたしました。\n※内容をご確認の上、不備がございましたら1週間以内お知らせください。'
+                noteContent: '※本日付をもちまして、上記の通り納品が完了いたしました。\n※内容をご確認の上、不備がございましたら1週間以内にお知らせください。'
             },
             invoice: {
                 title: '御請求書', deadlineLabel: '⏳ お支払期限', deadlinePrefixView: 'お支払期限',
@@ -298,17 +310,14 @@
         };
 
         window.addEventListener('DOMContentLoaded', () => {
-            // 1. 日付の初期設定
             const today = new Date().toISOString().split('T')[0];
             document.getElementById('in-date').value = today;
             const nextMonth = new Date();
             nextMonth.setMonth(nextMonth.getMonth() + 1);
             document.getElementById('in-deadline').value = nextMonth.toISOString().split('T')[0];
 
-            // 2. 備考欄フォームに初期値を設定
             document.getElementById('in-note').value = DOC_CONFIG[currentDocType].noteContent;
 
-            // 3. UIの初期同期
             renderFormRows();
             updatePreview();
             setupPreviewScale();
@@ -364,9 +373,76 @@
             document.getElementById('in-number').placeholder = cfg.numberPlaceholder;
             document.getElementById('in-title').placeholder = cfg.titlePlaceholder;
             
-            // 備考欄フォームの中身を連動切り替え
             document.getElementById('in-note').value = cfg.noteContent;
 
+            updatePreview();
+        }
+
+        // バニラJSによる HTML5 Drag and Drop 完全制御ロジック
+        function setupDragAndDropEvents() {
+            const rows = document.querySelectorAll('.sortable-row');
+            const container = document.getElementById('form-item-container');
+            
+            rows.forEach(row => {
+                row.addEventListener('dragstart', (e) => {
+                    row.classList.add('dragging');
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', row.dataset.id);
+                });
+
+                row.addEventListener('dragend', () => {
+                    row.classList.remove('dragging');
+                    reorderDetailItems();
+                });
+            });
+
+            container.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                const draggingRow = document.querySelector('.dragging');
+                if (!draggingRow) return;
+
+                const afterElement = getDragAfterElement(container, e.clientY);
+                if (afterElement == null) {
+                    container.appendChild(draggingRow);
+                } else {
+                    container.insertBefore(draggingRow, afterElement);
+                }
+            });
+        }
+
+        // マウス位置からどの行の間に挿入すべきかを割り出すY軸計算ロジック
+        function getDragAfterElement(container, y) {
+            const draggableElements = [...container.querySelectorAll('.sortable-row:not(.dragging)')];
+
+            return draggableElements.reduce((closest, child) => {
+                const box = child.getBoundingClientRect();
+                const offset = y - box.top - box.height / 2;
+                if (offset < 0 && offset > closest.offset) {
+                    return { offset: offset, element: child };
+                } else {
+                    return closest;
+                }
+            }, { offset: Number.NEGATIVE_INFINITY }).element;
+        }
+
+        // DOMの並び順から手元のデータ配列（detailItems）のインデックスを再構成するロジック
+        function reorderDetailItems() {
+            const container = document.getElementById('form-item-container');
+            const rows = [...container.querySelectorAll('.sortable-row')];
+            
+            const newOrderItems = rows.map(row => {
+                const id = parseInt(row.dataset.id);
+                // 各入力フィールドの最新の値を状態配列に反映させてから並び替える（入力内容の消失防御）
+                const name = document.getElementById(`item-name-${id}`).value;
+                const qty = parseFloat(document.getElementById(`item-qty-${id}`).value) || 0;
+                const price = parseFloat(document.getElementById(`item-price-${id}`).value) || 0;
+                const taxRate = parseInt(document.getElementById(`item-tax-${id}`).value);
+                
+                return { id, name, qty, price, taxRate };
+            });
+
+            detailItems = newOrderItems;
+            // プレビューおよび計算エンジンを即座に再起動
             updatePreview();
         }
 
@@ -382,17 +458,20 @@
 
             detailItems.forEach((item) => {
                 const row = document.createElement('div');
-                row.className = 'grid grid-cols-12 gap-2 bg-slate-50 p-2.5 rounded-xl border border-slate-200 items-center';
+                row.className = 'sortable-row grid grid-cols-12 gap-2 bg-slate-50 p-2.5 rounded-xl border border-slate-200 items-center select-none';
+                row.setAttribute('draggable', 'true');
+                row.setAttribute('data-id', item.id);
 
                 row.innerHTML = `
-                    <div class="col-span-5">
-                        <input type="text" id="item-name-${item.id}" placeholder="品名・内容" class="w-full border border-slate-200 rounded-md p-1.5 text-xs bg-white outline-none">
+                    <div class="col-span-5 flex items-center space-x-2">
+                        <div class="cursor-grab active:cursor-grabbing text-slate-400 hover:text-slate-600 text-sm px-1 select-none" title="ドラッグして並び替え">☰</div>
+                        <input type="text" id="item-name-${item.id}" placeholder="品名・内容" class="w-full border border-slate-200 rounded-md p-1.5 text-xs bg-white outline-none select-text">
                     </div>
                     <div class="col-span-2">
-                        <input type="number" id="item-qty-${item.id}" placeholder="数量" class="w-full border border-slate-200 rounded-md p-1.5 text-xs bg-white text-right outline-none">
+                        <input type="number" id="item-qty-${item.id}" placeholder="数量" class="w-full border border-slate-200 rounded-md p-1.5 text-xs bg-white text-right outline-none select-text">
                     </div>
                     <div class="col-span-2">
-                        <input type="number" id="item-price-${item.id}" placeholder="単価" class="w-full border border-slate-200 rounded-md p-1.5 text-xs bg-white text-right outline-none">
+                        <input type="number" id="item-price-${item.id}" placeholder="単価" class="w-full border border-slate-200 rounded-md p-1.5 text-xs bg-white text-right outline-none select-text">
                     </div>
                     <div class="col-span-2">
                         <select id="item-tax-${item.id}" class="w-full border border-slate-200 rounded-md p-1.5 text-xs bg-white outline-none">
@@ -419,6 +498,9 @@
 
                 container.appendChild(row);
             });
+
+            // ドラッグ＆ドロップ用リスナーの初期アクティベート
+            setupDragAndDropEvents();
         }
 
         function updateItem(id, field, value) {
@@ -475,7 +557,6 @@
 
             document.getElementById('view-total-label').innerText = cfg.totalLabel;
             
-            // 備考欄ラベル・コンテンツのプレビュー反映
             document.getElementById('view-note-label').innerText = cfg.noteLabel;
             document.getElementById('view-note-content').innerText = document.getElementById('in-note').value;
 
