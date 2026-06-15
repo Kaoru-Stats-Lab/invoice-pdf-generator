@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3連動対応：見積・納品・請求書PDFジェネレーター</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Noto Sans JP', sans-serif; background-color: #f8fafc; }
+
+        /* A4用紙の基本サイズ（画面・印刷共通のベース） */
+        .a4-page {
+            width: 210mm;
+            min-height: 297mm;
+            padding: 20mm;
+            background: white;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+            box-sizing: border-box;
+        }
+
+        /*
+         * プレビューコンテナ：JSによる動的スケーリングで
+         * 全画面幅に対応。preview-wrapperは実際の縮小後サイズに
+         * JSでセットされるためCSSでは指定しない。
+         */
+        .preview-container {
+            transform-origin: top left;
+            /* transform はJSで設定 */
+        }
+
+        /* 🖨️ 印刷時（PDF出力時）のCSSオーバーライド */
+        @media print {
+            body {
+                background: white !important;
+                color: black !important;
+            }
+            /* 不要なUIを全て排除 */
+            .no-print {
+                display: none !important;
+            }
+            /* プレビューの親要素をリセット */
+            .preview-section {
+                display: block !important;
+                padding: 0 !important;
+                margin: 0 !important;
+            }
+            .preview-wrapper {
+                width: auto !important;
+                height: auto !important;
+                overflow: visible !important;
+            }
+            /* スケーリングを解除してA4原寸で出力 */
+            .preview-container {
+                transform: scale(1) !important;
+                transform-origin: top left !important;
+            }
+            .a4-page {
+                box-shadow: none !important;
+                padding: 15mm !important;
+                width: 210mm !important;
+                min-height: 297mm !important;
+                /* 印刷時はコンテンツに応じて伸びる */
+            }
+            /* 背景色やボーダーを強制的に印刷 */
+            * {
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+            }
+        }
+    </style>
+</head>
+<body class="text-slate-800 min-h-screen flex flex-col antialiased">
+
+    <header class="no-print bg-slate-900 text-slate-100 border-b border-slate-800 shadow-sm">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="bg-indigo-600 text-white px-2.5 py-1 rounded-md font-bold text-sm tracking-wider">PDF</div>
+                <h1 class="text-base font-bold tracking-wide">見積・納品·請求書 3連動ジェネレーター</h1>
+            </div>
+            <button type="button" onclick="window.print()" class="bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 px-5 rounded-xl text-xs tracking-wider shadow-md transition-all flex items-center space-x-2 cursor-pointer">
+                <span>🖨️ PDFとして保存 / 印刷</span>
+            </button>
+        </div>
+    </header>
+
+    <main class="w-full max-w-[1700px] mx-auto px-4 sm:px-6 lg:px-8 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6 flex-1 items-start">
+        
+        <!-- 入力フォームパネル -->
+        <section class="no-print lg:col-span-6 bg-white rounded-2xl shadow-sm border border-slate-200 p-5 lg:p-6 space-y-6">
+            
+            <!-- 書類種別セレクター -->
+            <div>
+                <p class="block text-xs font-bold text-slate-500 mb-2 uppercase tracking-wider">📄 書類種別を選択</p>
+                <div class="bg-slate-100 p-1 rounded-xl grid grid-cols-3 gap-1 border border-slate-200" role="group" aria-label="書類種別">
+                    <button type="button" onclick="setDocType('estimate')" id="btn-type-estimate" class="py-2 rounded-lg text-xs font-bold text-center transition-all cursor-pointer bg-white text-slate-900 shadow-sm" aria-pressed="true">見積書</button>
+                    <button type="button" onclick="setDocType('delivery')" id="btn-type-delivery" class="py-2 rounded-lg text-xs font-bold text-center transition-all cursor-pointer text-slate-500 hover:text-slate-900" aria-pressed="false">納品書</button>
+                    <button type="button" onclick="setDocType('invoice')" id="btn-type-invoice" class="py-2 rounded-lg text-xs font-bold text-center transition-all cursor-pointer text-slate-500 hover:text-slate-900" aria-pressed="false">請求書</button>
+                </div>
+            </div>
+
+            <!-- 日付・番号・件名 -->
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label for="in-date" class="block text-xs font-bold text-slate-600 mb-1">📅 発行日</label>
+                    <input type="date" id="in-date" oninput="updatePreview()" class="w-full border border-slate-200 rounded-lg p-2 text-xs bg-slate-50 focus:bg-white outline-none focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all">
+                </div>
+                <div>
+                    <label id="lbl-deadline" for="in-deadline" class="block text-xs font-bold text-slate-600 mb-1">⏳ 有効期限</label>
+                    <input type="date" id="in-deadline" oninput="updatePreview()" class="w-full border border-slate-200 rounded-lg p-2 text-xs bg-slate-50 focus:bg-white outline-none focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all">
+                </div>
+                <div class="col-span-2">
+                    <label id="lbl-number" for="in-number" class="block text-xs font-bold text-slate-600 mb-1">🔢 見積番号</label>
+                    <input type="text" id="in-number" oninput="updatePreview()" placeholder="EST-2026-001" class="w-full border border-slate-200 rounded-lg p-2 text-xs bg-slate-50 focus:bg-white outline-none focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all">
+                </div>
+                <div class="col-span-2">
+                    <label for="in-title" class="block text-xs font-bold text-slate-600 mb-1">📌 件名</label>
+                    <input type="text" id="in-title" oninput="updatePreview()" placeholder="システム開発プロジェクト御見積の件" class="w-full border border-slate-200 rounded-lg p-2 text-xs bg-slate-50 focus:bg-white outline-none focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-500 transition-all">
+                </div>
+            </div>
+
+            <!-- 取引先・発行者情報 -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 border-t border-slate-100 pt-4">
+                <div class="space-y-3">
+                    <h3 class="text-xs font-bold text-slate-800 border-l-2 border-indigo-600 pl-2">🏢 取引先情報（宛名）</h3>
+                    <div>
+                        <label for="in-client-name" class="sr-only">取引先名</label>
+                        <input type="text" id="in-client-name" oninput="updatePreview()" placeholder="株式会社〇〇 御中" class="w-full border border-slate-200 rounded-lg p-2 text-xs bg-slate-50 focus:bg-white outline-none transition-all">
+                    </div>
+                    <div>
+                        <label for="in-client-details" class="sr-only">取引先詳細</label>
+                        <textarea id="in-client-details" oninput="updatePreview()" rows="3" placeholder="郵便番号、住所、連絡先など" class="w-full border border-slate-200 rounded-lg p-2 text-xs bg-slate-50 focus:bg-white outline-none transition-all"></textarea>
+                    </div>
+                </div>
+                <div class="space-y-3">
+                    <h3 class="text-xs font-bold text-slate-800 border-l-2 border-indigo-600 pl-2">✍️ 発行者情報</h3>
+                    <div>
+                        <label for="in-issuer-name" class="sr-only">発行者名</label>
+                        <input type="text" id="in-issuer-name" oninput="updatePreview()" placeholder="あなたの会社名・屋号" class="w-full border border-slate-200 rounded-lg p-2 text-xs bg-slate-50 focus:bg-white outline-none transition-all">
+                    </div>
+                    <div>
+                        <label for="in-issuer-details" class="sr-only">発行者詳細</label>
+                        <textarea id="in-issuer-details" oninput="updatePreview()" rows="2" placeholder="住所、お電話番号、メールアドレス等" class="w-full border border-slate-200 rounded-lg p-2 text-xs bg-slate-50 focus:bg-white outline-none transition-all"></textarea>
+                    </div>
+                    <div>
+                        <label for="in-issuer-invoice" class="block text-[10px] font-bold text-slate-500 mb-0.5">登録番号（インボイス）</label>
+                        <input type="text" id="in-issuer-invoice" oninput="updatePreview()" placeholder="T1234567890123" class="w-full border border-slate-200 rounded-lg p-2 text-xs bg-slate-50 focus:bg-white outline-none transition-all font-mono">
+                    </div>
+                </div>
+            </div>
+
+            <!-- 項目明細 -->
+            <div class="border-t border-slate-100 pt-4 space-y-3">
+                <div class="flex justify-between items-center">
+                    <h3 class="text-xs font-bold text-slate-800 border-l-2 border-indigo-600 pl-2">📊 項目明細</h3>
+                    <button type="button" onclick="addDetailRow()" class="bg-slate-900 hover:bg-slate-800 text-white font-medium text-[11px] px-2.5 py-1 rounded-md transition-all cursor-pointer">+ 行を追加</button>
+                </div>
+                <!-- ヘッダー行ラベル -->
+                <div class="grid grid-cols-12 gap-2 px-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider hidden sm:grid">
+                    <div class="col-span-5">品名・内容</div>
+                    <div class="col-span-2 text-right">数量</div>
+                    <div class="col-span-2 text-right">単価</div>
+                    <div class="col-span-2 text-center">税率</div>
+                    <div class="col-span-1"></div>
+                </div>
+                <div id="form-item-container" class="space-y-2 max-h-[280px] overflow-y-auto pr-1">
+                </div>
+            </div>
+
+            <!-- 広告枠 -->
+            <div class="bg-slate-50 border border-slate-200 text-[10px] text-slate-400 text-center rounded-xl p-3">
+                <div class="font-bold text-[9px] text-slate-400 mb-1 tracking-wider">ADVERTISEMENT</div>
+                <div class="border border-dashed border-slate-200 py-3 bg-white rounded-lg font-mono">Google AdSense (レスポンシブ自動最適化ディスプレイ枠)</div>
+            </div>
+        </section>
+
+        <!-- A4プレビューパネル -->
+        <section class="preview-section lg:col-span-6 flex justify-center lg:justify-start overflow-hidden">
+            <!--
+                preview-wrapper: JS が動的にwidthとheightをセット（縮小後の実効サイズ）
+                preview-container: JS が transform: scale() をセット
+            -->
+            <div class="preview-wrapper" id="preview-wrapper">
+                <div class="preview-container" id="preview-container">
+                    <div id="pdf-paper" class="a4-page flex flex-col justify-between">
+                        
+                        <div>
+                            <!-- ヘッダー：書類タイトル・メタ情報 -->
+                            <div class="flex justify-between items-start border-b-2 border-slate-900 pb-4 mb-6">
+                                <div>
+                                    <h2 id="view-doc-type" class="text-3xl font-bold tracking-widest text-slate-900">御見積書</h2>
+                                    <p id="view-title" class="text-sm font-medium text-slate-600 mt-2 select-all">件名: 宛名情報・明細を入力してください</p>
+                                </div>
+                                <div class="text-right text-xs space-y-1 text-slate-600 font-mono">
+                                    <p>日付: <span id="view-date" class="select-all">----/--/--</span></p>
+                                    <p id="view-lbl-deadline-row">有効期限: <span id="view-deadline" class="select-all">----/--/--</span></p>
+                                    <p><span id="view-num-label">見積番号</span>: <span id="view-number" class="select-all">--------</span></p>
+                                </div>
+                            </div>
+
+                            <!-- 宛名・発行者 -->
+                            <div class="grid grid-cols-2 gap-6 mb-8 text-xs">
+                                <div class="space-y-2">
+                                    <div id="view-client-name" class="text-base font-bold border-b border-slate-300 pb-1 select-all">株式会社〇〇 御中</div>
+                                    <div id="view-client-details" class="whitespace-pre-wrap text-slate-600 leading-relaxed select-all">取引先住所・連絡先</div>
+                                </div>
+                                <div class="text-right space-y-1.5">
+                                    <div id="view-issuer-name" class="text-sm font-bold text-slate-900 select-all">あなたの会社名・屋号</div>
+                                    <div id="view-issuer-details" class="whitespace-pre-wrap text-slate-600 leading-normal select-all">あなたの住所・連絡先</div>
+                                    <div id="view-issuer-invoice" class="text-[11px] font-mono text-slate-500 mt-1 select-all">登録番号: --------</div>
+                                </div>
+                            </div>
+
+                            <!-- 合計金額ハイライト -->
+                            <div id="view-honor-block" class="bg-slate-900 text-white p-3 rounded-lg flex justify-between items-center mb-6">
+                                <span id="view-total-label" class="text-xs font-bold tracking-wider">御見積金額（税込合計）</span>
+                                <span id="view-total-honor" class="text-2xl font-bold font-mono select-all">¥0-</span>
+                            </div>
+
+                            <!-- 明細テーブル -->
+                            <table class="w-full text-xs text-left border-collapse mb-6">
+                                <thead>
+                                    <tr class="bg-slate-100 text-slate-700 border-b border-slate-300">
+                                        <th class="py-2 px-3 font-bold">品名 / 内容</th>
+                                        <th class="py-2 px-3 font-bold text-right w-16">数量</th>
+                                        <th class="py-2 px-3 font-bold text-right w-24">単価</th>
+                                        <th class="py-2 px-3 font-bold text-center w-16">税率</th>
+                                        <th class="py-2 px-3 font-bold text-right w-28">金額</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="view-table-body" class="divide-y divide-slate-200">
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <!-- フッター：備考・計算サマリー -->
+                        <div class="grid grid-cols-12 gap-4 text-xs pt-4 border-t border-slate-200">
+                            <div class="col-span-7 space-y-2">
+                                <div id="view-note-label" class="font-bold text-slate-700">【備考】</div>
+                                <p id="view-note-content" class="text-slate-500 leading-relaxed whitespace-pre-wrap">※お振込手数料は貴社にてご負担願います。
+※本見積の有効期限は発行より1ヶ月間となります。</p>
+                            </div>
+                            <div class="col-span-5 bg-slate-50 p-3 rounded-lg border border-slate-200 font-mono text-right space-y-1.5">
+                                <div class="flex justify-between text-slate-600">
+                                    <span>小計:</span><span id="calc-subtotal">¥0</span>
+                                </div>
+                                <div class="flex justify-between text-[11px] text-slate-500">
+                                    <span>10%対象額 (<span id="calc-base10">¥0</span>):</span><span id="calc-tax10">¥0</span>
+                                </div>
+                                <div class="flex justify-between text-[11px] text-slate-500">
+                                    <span>8%対象額 (<span id="calc-base8">¥0</span>):</span><span id="calc-tax8">¥0</span>
+                                </div>
+                                <div class="flex justify-between text-slate-600 border-t border-slate-300 pt-1.5">
+                                    <span>消費税 合計:</span><span id="calc-tax-total">¥0</span>
+                                </div>
+                                <div class="flex justify-between text-sm font-bold text-slate-900 border-t-2 border-double border-slate-400 pt-1">
+                                    <span>総合計金額:</span><span id="calc-total">¥0</span>
+                                </div>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <footer class="no-print bg-slate-900 text-slate-500 text-center py-4 text-[11px] tracking-wider border-t border-slate-800 mt-auto">
+        &copy; 1ページ完結型 高性能3連動PDFジェネレーター PRO.
+    </footer>
+
+    <script>
+        'use strict';
+
+        // ─── 状態管理 ────────────────────────────────────────────
+        let currentDocType = 'estimate'; // 'estimate' | 'delivery' | 'invoice'
+
+        // 初期サンプル明細データ
+        let detailItems = [
+            { id: 1, name: '基本システム設計・UI/UXデザイン構築', qty: 1, price: 350000, taxRate: 10 },
+            { id: 2, name: 'フロントエンド開発 (Tailwind CSSコンポーネント化)', qty: 1, price: 200000, taxRate: 10 },
+            { id: 3, name: '軽減税率対象ノベルティグッズ', qty: 50, price: 1200, taxRate: 8 }
+        ];
+
+        // ─── 書類種別ごとの設定マップ ─────────────────────────────
+        const DOC_CONFIG = {
+            estimate: {
+                title: '御見積書',
+                deadlineLabel: '⏳ 有効期限',
+                deadlinePrefixView: '有効期限',
+                numberLabel: '🔢 見積番号',
+                numberPlaceholder: 'EST-2026-001',
+                titlePlaceholder: 'システム開発プロジェクト御見積の件',
+                totalLabel: '御見積金額（税込合計）',
+                noteLabel: '【お振込先 / 備考】',
+                noteContent: '※お振込手数料は貴社にてご負担願います。\n※本見積の有効期限は発行より1ヶ月間となります。',
+                honorBgClass: 'bg-slate-900',
+                btnId: 'btn-type-estimate',
+            },
+            delivery: {
+                title: '御納品書',
+                deadlineLabel: '⏳ 納品日',
+                deadlinePrefixView: '納品日',
+                numberLabel: '🔢 納品番号',
+                numberPlaceholder: 'DLV-2026-001',
+                titlePlaceholder: 'システム開発プロジェクト納品の件',
+                totalLabel: '御納品金額（税込合計）',
+                noteLabel: '【検収・備考】',
+                noteContent: '※本日付をもちまして、上記の通り納品が完了いたしました。\n※内容をご確認の上、不備がございましたら1週間以内にお知らせください。',
+                honorBgClass: 'bg-slate-700',
+                btnId: 'btn-type-delivery',
+            },
+            invoice: {
+                title: '御請求書',
+                deadlineLabel: '⏳ お支払期限',
+                deadlinePrefixView: 'お支払期限',
+                numberLabel: '🔢 請求番号',
+                numberPlaceholder: 'INV-2026-001',
+                titlePlaceholder: 'システム開発プロジェクト御請求の件',
+                totalLabel: '御請求金額（税込合計）',
+                noteLabel: '【お振込先】',
+                noteContent: 'みずほ銀行 ○○支店 普通 1234567\n口座名義：シャ）スグダスオンライン\n※お振込手数料は貴社にてご負担願います。',
+                honorBgClass: 'bg-indigo-950',
+                btnId: 'btn-type-invoice',
+            }
+        };
+
+        // ─── 初期化 ───────────────────────────────────────────────
+        window.addEventListener('DOMContentLoaded', () => {
+            const today = new Date().toISOString().split('T')[0];
+            document.getElementById('in-date').value = today;
+            // 有効期限の初期値：1ヶ月後
+            const nextMonth = new Date();
+            nextMonth.setMonth(nextMonth.getMonth() + 1);
+            document.getElementById('in-deadline').value = nextMonth.toISOString().split('T')[0];
+
+            renderFormRows();
+            updatePreview();
+            setupPreviewScale();
+        });
+
+        window.addEventListener('resize', setupPreviewScale);
+
+        // ─── プレビュースケーリング（モバイル対応の核心） ──────────
+        /**
+         * A4原寸（210mm ≈ 794px @ 96dpi）を画面幅に合わせて動的縮小する。
+         * transform-origin: top left で左上基点スケーリング。
+         * wrapper の実効サイズを縮小後の値にセットしてレイアウト崩れを防ぐ。
+         */
+        function setupPreviewScale() {
+            const A4_W_PX = 794; // 210mm @ 96dpi
+            const A4_H_PX = 1123; // 297mm @ 96dpi
+
+            const wrapper = document.getElementById('preview-wrapper');
+            const container = document.getElementById('preview-container');
+            if (!wrapper || !container) return;
+
+            // 印刷時はスケーリング不要
+            if (window.matchMedia('print').matches) return;
+
+            // 利用可能な幅を計算（親セクションの幅）
+            const section = wrapper.closest('section');
+            const availableWidth = section ? section.clientWidth - 32 : window.innerWidth - 64;
+
+            const scale = Math.min(1, availableWidth / A4_W_PX);
+
+            container.style.transform = `scale(${scale})`;
+            // wrapperの高さ・幅を縮小後に合わせてスペース確保
+            wrapper.style.width = `${Math.round(A4_W_PX * scale)}px`;
+            wrapper.style.height = `${Math.round(A4_H_PX * scale)}px`;
+            wrapper.style.overflow = 'hidden';
+            wrapper.style.flexShrink = '0';
+        }
+
+        // ─── 書類種別の切り替え ────────────────────────────────────
+        function setDocType(type) {
+            if (!DOC_CONFIG[type]) return;
+            currentDocType = type;
+
+            const cfg = DOC_CONFIG[type];
+            const allBtnIds = ['btn-type-estimate', 'btn-type-delivery', 'btn-type-invoice'];
+
+            // ボタンのアクティブ状態リセット
+            allBtnIds.forEach(id => {
+                const btn = document.getElementById(id);
+                if (!btn) return;
+                const isActive = id === cfg.btnId;
+                btn.className = isActive
+                    ? 'py-2 rounded-lg text-xs font-bold text-center transition-all cursor-pointer bg-white text-slate-900 shadow-sm'
+                    : 'py-2 rounded-lg text-xs font-bold text-center transition-all cursor-pointer text-slate-500 hover:text-slate-900';
+                btn.setAttribute('aria-pressed', String(isActive));
+            });
+
+            // フォームラベルの更新
+            document.getElementById('lbl-deadline').innerText = cfg.deadlineLabel;
+            document.getElementById('lbl-number').innerText = cfg.numberLabel;
+            document.getElementById('in-number').placeholder = cfg.numberPlaceholder;
+            // placeholderのみ更新（入力値は上書きしない）
+            document.getElementById('in-title').placeholder = cfg.titlePlaceholder;
+
+            updatePreview();
+        }
+
+        // ─── フォーム明細行のレンダリング ────────────────────────────
+        /**
+         * 【修正】input の value 属性は直接 DOM プロパティで設定。
+         * escapeHtml を innerHTML の value に使うと "二重エスケープ" が発生し、
+         * 例: & → &amp; が品名データに混入するバグを防ぐ。
+         */
+        function renderFormRows() {
+            const container = document.getElementById('form-item-container');
+            if (!container) return;
+            container.innerHTML = '';
+
+            if (detailItems.length === 0) {
+                container.innerHTML = '<p class="text-center text-xs text-slate-400 py-4">明細がありません。「+ 行を追加」で追加してください。</p>';
+                return;
+            }
+
+            detailItems.forEach((item) => {
+                const row = document.createElement('div');
+                row.className = 'grid grid-cols-12 gap-2 bg-slate-50 p-2.5 rounded-xl border border-slate-200 items-center';
+                row.setAttribute('data-item-id', item.id);
+
+                // innerHTMLでは value を安全に埋め込まず、後からDOMで代入する
+                row.innerHTML = `
+                    <div class="col-span-5">
+                        <label class="sr-only" for="item-name-${item.id}">品名</label>
+                        <input type="text" id="item-name-${item.id}" placeholder="品名・内容"
+                            class="w-full border border-slate-200 rounded-md p-1.5 text-xs bg-white outline-none focus:border-indigo-400">
+                    </div>
+                    <div class="col-span-2">
+                        <label class="sr-only" for="item-qty-${item.id}">数量</label>
+                        <input type="number" id="item-qty-${item.id}" placeholder="数量" min="0"
+                            class="w-full border border-slate-200 rounded-md p-1.5 text-xs bg-white text-right outline-none focus:border-indigo-400">
+                    </div>
+                    <div class="col-span-2">
+                        <label class="sr-only" for="item-price-${item.id}">単価</label>
+                        <input type="number" id="item-price-${item.id}" placeholder="単価" min="0"
+                            class="w-full border border-slate-200 rounded-md p-1.5 text-xs bg-white text-right outline-none focus:border-indigo-400">
+                    </div>
+                    <div class="col-span-2">
+                        <label class="sr-only" for="item-tax-${item.id}">税率</label>
+                        <select id="item-tax-${item.id}"
+                            class="w-full border border-slate-200 rounded-md p-1.5 text-xs bg-white outline-none focus:border-indigo-400">
+                            <option value="10">10%</option>
+                            <option value="8">8%</option>
+                            <option value="0">対象外</option>
+                        </select>
+                    </div>
+                    <div class="col-span-1 text-center">
+                        <button type="button" aria-label="この行を削除"
+                            class="text-rose-500 hover:text-rose-700 font-bold text-xs cursor-pointer w-full py-1">✕</button>
+                    </div>
+                `;
+
+                // ── 二重エスケープ回避：DOMプロパティで値をセット ──
+                row.querySelector(`#item-name-${item.id}`).value = item.name;
+                row.querySelector(`#item-qty-${item.id}`).value = item.qty;
+                row.querySelector(`#item-price-${item.id}`).value = item.price;
+                row.querySelector(`#item-tax-${item.id}`).value = String(item.taxRate);
+
+                // ── イベントバインド ──
+                row.querySelector(`#item-name-${item.id}`).addEventListener('input', (e) => {
+                    updateItem(item.id, 'name', e.target.value);
+                });
+                row.querySelector(`#item-qty-${item.id}`).addEventListener('input', (e) => {
+                    updateItem(item.id, 'qty', e.target.value);
+                });
+                row.querySelector(`#item-price-${item.id}`).addEventListener('input', (e) => {
+                    updateItem(item.id, 'price', e.target.value);
+                });
+                row.querySelector(`#item-tax-${item.id}`).addEventListener('change', (e) => {
+                    updateItem(item.id, 'taxRate', e.target.value);
+                });
+                row.querySelector('button[aria-label="この行を削除"]').addEventListener('click', () => {
+                    deleteDetailRow(item.id);
+                });
+
+                container.appendChild(row);
+            });
+        }
+
+        // ─── 明細データの更新（プレビューのみ再描画。フォームは触らない） ──
+        function updateItem(id, field, value) {
+            const item = detailItems.find(i => i.id === id);
+            if (!item) return;
+
+            if (field === 'qty' || field === 'price' || field === 'taxRate') {
+                const num = parseFloat(value);
+                // NaN・負数のガード
+                item[field] = isNaN(num) ? 0 : Math.max(0, num);
+            } else {
+                item[field] = value; // name はそのまま文字列（エスケープなし）
+            }
+            updatePreview(); // フォームは再描画せず、プレビューだけ更新
+        }
+
+        // ─── 行の追加 ────────────────────────────────────────────
+        function addDetailRow() {
+            const newId = detailItems.length > 0
+                ? Math.max(...detailItems.map(i => i.id)) + 1
+                : 1;
+            detailItems.push({ id: newId, name: '', qty: 1, price: 0, taxRate: 10 });
+            renderFormRows(); // 行追加時のみフォーム全再描画
+            updatePreview();
+            // 新しく追加した行の品名フィールドにフォーカス
+            requestAnimationFrame(() => {
+                const el = document.getElementById(`item-name-${newId}`);
+                if (el) el.focus();
+            });
+        }
+
+        // ─── 行の削除 ────────────────────────────────────────────
+        function deleteDetailRow(id) {
+            detailItems = detailItems.filter(item => item.id !== id);
+            renderFormRows();
+            updatePreview();
+        }
+
+        // ─── A4プレビューのリアルタイム更新 ─────────────────────────
+        function updatePreview() {
+            const cfg = DOC_CONFIG[currentDocType];
+            if (!cfg) return;
+
+            // ── 書類タイトル ──
+            document.getElementById('view-doc-type').innerText = cfg.title;
+
+            // ── 日付類 ──
+            const dateVal = document.getElementById('in-date').value;
+            const deadlineVal = document.getElementById('in-deadline').value;
+            document.getElementById('view-date').innerText = formatDate(dateVal);
+            document.getElementById('view-deadline').innerText = formatDate(deadlineVal);
+            document.getElementById('view-lbl-deadline-row').firstChild.textContent = cfg.deadlinePrefixView + ': ';
+
+            // ── 番号・件名 ──
+            document.getElementById('view-num-label').innerText = cfg.numberLabel.replace(/^🔢\s*/, '');
+            document.getElementById('view-number').innerText = document.getElementById('in-number').value || '--------';
+
+            const titleInput = document.getElementById('in-title').value.trim();
+            document.getElementById('view-title').innerText = titleInput
+                ? `件名: ${titleInput}`
+                : '件名: （未入力）';
+
+            // ── 宛名・発行者（innerText でXSSリスクなし） ──
+            document.getElementById('view-client-name').innerText =
+                document.getElementById('in-client-name').value || '株式会社〇〇 御中';
+            document.getElementById('view-client-details').innerText =
+                document.getElementById('in-client-details').value || '取引先住所・連絡先';
+            document.getElementById('view-issuer-name').innerText =
+                document.getElementById('in-issuer-name').value || 'あなたの会社名・屋号';
+            document.getElementById('view-issuer-details').innerText =
+                document.getElementById('in-issuer-details').value || 'あなたの住所・連絡先';
+
+            const invoiceNum = document.getElementById('in-issuer-invoice').value.trim();
+            document.getElementById('view-issuer-invoice').innerText =
+                invoiceNum ? `登録番号: ${invoiceNum}` : '登録番号: 未設定';
+
+            // ── 合計ラベル・備考 ──
+            document.getElementById('view-total-label').innerText = cfg.totalLabel;
+            document.getElementById('view-note-label').innerText = cfg.noteLabel;
+            document.getElementById('view-note-content').innerText = cfg.noteContent;
+
+            // honorBlockのBGクラスを切り替え
+            const honorBlock = document.getElementById('view-honor-block');
+            honorBlock.className = `${cfg.honorBgClass} text-white p-3 rounded-lg flex justify-between items-center mb-6`;
+
+            // ── 明細テーブル構築 & 税計算 ──
+            const tbody = document.getElementById('view-table-body');
+            tbody.innerHTML = '';
+
+            let totalSubtotal = 0;
+            let base8 = 0, base10 = 0;
+            let tax8 = 0, tax10 = 0;
+
+            if (detailItems.length === 0) {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td colspan="5" class="py-6 text-center text-slate-400 text-xs">明細がありません</td>`;
+                tbody.appendChild(tr);
+            } else {
+                detailItems.forEach(item => {
+                    const lineAmount = Math.round(item.qty * item.price);
+                    totalSubtotal += lineAmount;
+
+                    if (item.taxRate === 10) {
+                        base10 += lineAmount;
+                        tax10 += Math.floor(lineAmount * 0.1);
+                    } else if (item.taxRate === 8) {
+                        base8 += lineAmount;
+                        tax8 += Math.floor(lineAmount * 0.08);
+                    }
+
+                    const tr = document.createElement('tr');
+                    tr.className = 'border-b border-slate-100 text-slate-700';
+
+                    // テーブルセルはすべて innerText で設定（XSS防止）
+                    const tdName = document.createElement('td');
+                    tdName.className = 'py-2 px-3 select-all';
+                    tdName.innerText = item.name || '（品名未入力）';
+
+                    const tdQty = document.createElement('td');
+                    tdQty.className = 'py-2 px-3 text-right font-mono select-all';
+                    tdQty.innerText = item.qty.toLocaleString('ja-JP');
+
+                    const tdPrice = document.createElement('td');
+                    tdPrice.className = 'py-2 px-3 text-right font-mono select-all';
+                    tdPrice.innerText = `¥${item.price.toLocaleString('ja-JP')}`;
+
+                    const tdTax = document.createElement('td');
+                    tdTax.className = 'py-2 px-3 text-center text-slate-500 select-all';
+                    tdTax.innerText = item.taxRate > 0 ? `${item.taxRate}%` : '対象外';
+
+                    const tdAmount = document.createElement('td');
+                    tdAmount.className = 'py-2 px-3 text-right font-bold font-mono select-all';
+                    tdAmount.innerText = `¥${lineAmount.toLocaleString('ja-JP')}`;
+
+                    tr.append(tdName, tdQty, tdPrice, tdTax, tdAmount);
+                    tbody.appendChild(tr);
+                });
+            }
+
+            // ── 計算結果の反映 ──
+            const totalTax = tax8 + tax10;
+            const finalTotal = totalSubtotal + totalTax;
+
+            setText('calc-subtotal', `¥${totalSubtotal.toLocaleString('ja-JP')}`);
+            setText('calc-base10',   `¥${base10.toLocaleString('ja-JP')}`);
+            setText('calc-tax10',    `¥${tax10.toLocaleString('ja-JP')}`);
+            setText('calc-base8',    `¥${base8.toLocaleString('ja-JP')}`);
+            setText('calc-tax8',     `¥${tax8.toLocaleString('ja-JP')}`);
+            setText('calc-tax-total',`¥${totalTax.toLocaleString('ja-JP')}`);
+            setText('calc-total',    `¥${finalTotal.toLocaleString('ja-JP')}`);
+            setText('view-total-honor', `¥${finalTotal.toLocaleString('ja-JP')}-`);
+        }
+
+        // ─── ユーティリティ ───────────────────────────────────────
+
+        /** YYYY-MM-DD → YYYY/MM/DD 表示フォーマット。未入力時は '----/--/--' */
+        function formatDate(val) {
+            if (!val) return '----/--/--';
+            return val.replace(/-/g, '/');
+        }
+
+        /** getElementById + innerText のショートハンド */
+        function setText(id, text) {
+            const el = document.getElementById(id);
+            if (el) el.innerText = text;
+        }
+    </script>
+</body>
+</html>
